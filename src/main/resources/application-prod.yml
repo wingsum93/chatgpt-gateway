@@ -8,5 +8,5 @@ app:
   security:
     internal-api-key: ${INTERNAL_API_KEY}
   limits:
-    requests-per-minute: 60
+    requests-per-minute: 30
     max-body-bytes: 1048576

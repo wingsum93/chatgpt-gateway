@@ -8,5 +8,10 @@ app:
   security:
     internal-api-key: ${INTERNAL_API_KEY}
   limits:
-    requests-per-minute: 60
-    max-body-bytes: 1048576
+    requests-per-minute: 20
+    max-body-bytes: 68576
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
