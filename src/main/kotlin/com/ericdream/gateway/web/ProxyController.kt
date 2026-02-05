@@ -12,7 +12,7 @@ import reactor.core.publisher.Mono
 @RestController
 class ProxyController(
     private val proxy: OpenAIProxyService,
-    private val rateLimiter: (String) -> Boolean
+    private val rateLimiter: (String) -> Boolean = {true}
 ) {
 
     @PostMapping("/v1/responses")

@@ -7,6 +7,11 @@ import org.springframework.web.reactive.function.client.WebClient
 
 @Configuration
 class WebClientConfig {
+
+    @Bean
+     fun webClientBuilder(): WebClient.Builder = WebClient.builder()
+        .defaultHeader("User-Agent", "eric-gateway")
+
     @Bean
     fun openAiWebClient(
         builder: WebClient.Builder,
