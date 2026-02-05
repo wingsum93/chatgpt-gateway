@@ -36,7 +36,7 @@ A Spring Boot reactive gateway service built with Kotlin for managing ChatGPT AP
 
 ## Project Structure
 
-- Package: `com.ericdream.ai_gateway`
+- Package: `com.ericdream.gateway`
 - Built with reactive programming patterns using Kotlin Coroutines and Project Reactor
 
 ## Reference Documentation

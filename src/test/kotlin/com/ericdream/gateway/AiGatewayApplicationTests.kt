@@ -1,4 +1,4 @@
-package com.ericdream.ai_gateway
+package com.ericdream.gateway
 
 import org.junit.jupiter.api.Test
 import org.springframework.boot.test.context.SpringBootTest

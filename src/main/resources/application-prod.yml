@@ -1,0 +1,12 @@
+spring:
+  application:
+    name: ai-gateway
+app:
+  openai:
+    base-url: https://api.openai.com
+    api-key: ${OPENAI_API_KEY}
+  security:
+    internal-api-key: ${INTERNAL_API_KEY}
+  limits:
+    requests-per-minute: 60
+    max-body-bytes: 1048576
