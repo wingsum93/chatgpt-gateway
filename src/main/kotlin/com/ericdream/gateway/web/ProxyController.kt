@@ -55,7 +55,7 @@ class ProxyController(
                     return@flatMap writeJsonError(resp, HttpStatus.BAD_REQUEST, streamValidationError)
                 }
 
-                proxy.forwardResponses(req, body)
+                proxy.forwardResponses(req, body, requireStream)
                     .flatMap { upstream ->
                         resp.statusCode = upstream.statusCode
                         upstream.headers.forEach { name, values -> resp.headers.addAll(name, values) }

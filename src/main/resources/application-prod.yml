@@ -5,6 +5,13 @@ app:
   openai:
     base-url: https://api.openai.com
     api-key: ${OPENAI_API_KEY}
+    forward-client-scope-headers: false
+    organization: ${OPENAI_ORGANIZATION:}
+    project: ${OPENAI_PROJECT:}
+    http:
+      connect-timeout-ms: 30000
+      response-timeout-ms: 60000
+      stream-response-timeout-ms: 0
   security:
     internal-api-key: ${INTERNAL_API_KEY}
   limits:
