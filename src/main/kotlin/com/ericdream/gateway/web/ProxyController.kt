@@ -21,12 +21,12 @@ class ProxyController(
     private val rateLimiter: (String) -> Boolean = { true }
 ) {
 
-    @PostMapping("/v1/responses")
+    @PostMapping("/v1/responses", produces = ["application/json"], consumes = ["application/json"])
     fun responses(req: ServerHttpRequest, resp: ServerHttpResponse): Mono<Void> {
         return forwardValidated(req, resp, requireStream = false)
     }
 
-    @PostMapping("/v1/responses/stream")
+    @PostMapping("/v1/responses/stream", consumes = ["text/event-stream"])
     fun streamResponses(req: ServerHttpRequest, resp: ServerHttpResponse): Mono<Void> {
         return forwardValidated(req, resp, requireStream = true)
     }
