@@ -84,7 +84,7 @@ curl -fsS http://localhost:8080/actuator/health
 ```bash
 curl -sS -X POST http://localhost:8080/v1/responses \
   -H "Content-Type: application/json" \
-  -H "X-Internal-Api-Key: ${INTERNAL_API_KEY}" \
+  -H "Authorization: Bearer ${INTERNAL_API_KEY}" \
   -d '{"model":"gpt-5","input":"hello"}'
 ```
 

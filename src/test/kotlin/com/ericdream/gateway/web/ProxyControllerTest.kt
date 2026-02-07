@@ -18,6 +18,7 @@ import reactor.core.publisher.Mono
 import tools.jackson.module.kotlin.jacksonObjectMapper
 import java.net.InetSocketAddress
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 class ProxyControllerTest {
@@ -29,6 +30,7 @@ class ProxyControllerTest {
 
         val req = MockServerHttpRequest.post("/v1/responses")
             .contentType(MediaType.APPLICATION_JSON)
+            .header(HttpHeaders.AUTHORIZATION, bearerAuth())
             .body("""{"model":"gpt-5","input":"hi","stream":true}""")
         val resp = MockServerHttpResponse()
 
@@ -45,6 +47,7 @@ class ProxyControllerTest {
 
         val req = MockServerHttpRequest.post("/v1/responses/stream")
             .contentType(MediaType.APPLICATION_JSON)
+            .header(HttpHeaders.AUTHORIZATION, bearerAuth())
             .body("""{"model":"gpt-5","input":"hi","stream":false}""")
         val resp = MockServerHttpResponse()
 
@@ -69,6 +72,7 @@ class ProxyControllerTest {
 
         val req = MockServerHttpRequest.post("/v1/responses")
             .contentType(MediaType.APPLICATION_JSON)
+            .header(HttpHeaders.AUTHORIZATION, bearerAuth())
             .header("X-Forwarded-For", "198.51.100.9, 10.0.0.1")
             .header("OpenAI-Organization", "org_123")
             .header("OpenAI-Project", "proj_123")
@@ -97,6 +101,7 @@ class ProxyControllerTest {
 
         val req = MockServerHttpRequest.post("/v1/responses/stream")
             .contentType(MediaType.APPLICATION_JSON)
+            .header(HttpHeaders.AUTHORIZATION, bearerAuth())
             .remoteAddress(InetSocketAddress("203.0.113.7", 51234))
             .body("""{"model":"gpt-5","input":"hi","stream":true}""")
         val resp = MockServerHttpResponse()
@@ -117,6 +122,7 @@ class ProxyControllerTest {
 
         val req = MockServerHttpRequest.post("/v1/responses")
             .contentType(MediaType.APPLICATION_JSON)
+            .header(HttpHeaders.AUTHORIZATION, bearerAuth())
             .body("""{"model":"gpt-5","input":"hi"}""")
         val resp = MockServerHttpResponse()
 
@@ -135,6 +141,7 @@ class ProxyControllerTest {
 
         val req = MockServerHttpRequest.post("/v1/responses")
             .contentType(MediaType.APPLICATION_JSON)
+            .header(HttpHeaders.AUTHORIZATION, bearerAuth())
             .body("""{"model":"gpt-5","input":"hi"}""")
         val resp = MockServerHttpResponse()
 
@@ -154,6 +161,7 @@ class ProxyControllerTest {
 
         val req = MockServerHttpRequest.post("/v1/responses")
             .contentType(MediaType.APPLICATION_JSON)
+            .header(HttpHeaders.AUTHORIZATION, bearerAuth())
             .header("OpenAI-Organization", "org_inbound")
             .header("OpenAI-Project", "proj_inbound")
             .body("""{"model":"gpt-5","input":"hi"}""")
@@ -178,6 +186,7 @@ class ProxyControllerTest {
 
         val req = MockServerHttpRequest.post("/v1/responses")
             .contentType(MediaType.APPLICATION_JSON)
+            .header(HttpHeaders.AUTHORIZATION, bearerAuth())
             .header("OpenAI-Organization", "org_inbound")
             .header("OpenAI-Project", "proj_inbound")
             .body("""{"model":"gpt-5","input":"hi"}""")
@@ -205,11 +214,107 @@ class ProxyControllerTest {
         }
     }
 
+    @Test
+    fun `responses rejects invalid bearer token before calling upstream`() {
+        val captured = AtomicReference<ClientRequest>()
+        val upstreamCalls = AtomicInteger(0)
+        val controller = newController(captured) {
+            upstreamCalls.incrementAndGet()
+            successJsonResponse()
+        }
+
+        val req = MockServerHttpRequest.post("/v1/responses")
+            .contentType(MediaType.APPLICATION_JSON)
+            .header(HttpHeaders.AUTHORIZATION, bearerAuth("wrong-token"))
+            .body("""{"model":"gpt-5","input":"hi"}""")
+        val resp = MockServerHttpResponse()
+
+        controller.responses(req, resp).block()
+
+        assertEquals(HttpStatus.UNAUTHORIZED, resp.statusCode)
+        assertEquals("Bearer", resp.headers.getFirst(HttpHeaders.WWW_AUTHENTICATE))
+        assertTrue(resp.bodyAsString.block()!!.contains("unauthorized"))
+        assertEquals(0, upstreamCalls.get())
+        assertNull(captured.get())
+    }
+
+    @Test
+    fun `stream endpoint rejects invalid bearer token before calling upstream`() {
+        val captured = AtomicReference<ClientRequest>()
+        val upstreamCalls = AtomicInteger(0)
+        val controller = newController(captured) {
+            upstreamCalls.incrementAndGet()
+            successJsonResponse()
+        }
+
+        val req = MockServerHttpRequest.post("/v1/responses/stream")
+            .contentType(MediaType.APPLICATION_JSON)
+            .header(HttpHeaders.AUTHORIZATION, bearerAuth("wrong-token"))
+            .body("""{"model":"gpt-5","input":"hi","stream":true}""")
+        val resp = MockServerHttpResponse()
+
+        controller.streamResponses(req, resp).block()
+
+        assertEquals(HttpStatus.UNAUTHORIZED, resp.statusCode)
+        assertEquals("Bearer", resp.headers.getFirst(HttpHeaders.WWW_AUTHENTICATE))
+        assertTrue(resp.bodyAsString.block()!!.contains("unauthorized"))
+        assertEquals(0, upstreamCalls.get())
+        assertNull(captured.get())
+    }
+
+    @Test
+    fun `responses rejects missing authorization header`() {
+        val captured = AtomicReference<ClientRequest>()
+        val upstreamCalls = AtomicInteger(0)
+        val controller = newController(captured) {
+            upstreamCalls.incrementAndGet()
+            successJsonResponse()
+        }
+
+        val req = MockServerHttpRequest.post("/v1/responses")
+            .contentType(MediaType.APPLICATION_JSON)
+            .body("""{"model":"gpt-5","input":"hi"}""")
+        val resp = MockServerHttpResponse()
+
+        controller.responses(req, resp).block()
+
+        assertEquals(HttpStatus.UNAUTHORIZED, resp.statusCode)
+        assertEquals("Bearer", resp.headers.getFirst(HttpHeaders.WWW_AUTHENTICATE))
+        assertTrue(resp.bodyAsString.block()!!.contains("unauthorized"))
+        assertEquals(0, upstreamCalls.get())
+        assertNull(captured.get())
+    }
+
+    @Test
+    fun `responses rejects non bearer authorization scheme`() {
+        val captured = AtomicReference<ClientRequest>()
+        val upstreamCalls = AtomicInteger(0)
+        val controller = newController(captured) {
+            upstreamCalls.incrementAndGet()
+            successJsonResponse()
+        }
+
+        val req = MockServerHttpRequest.post("/v1/responses")
+            .contentType(MediaType.APPLICATION_JSON)
+            .header(HttpHeaders.AUTHORIZATION, "Basic abc123")
+            .body("""{"model":"gpt-5","input":"hi"}""")
+        val resp = MockServerHttpResponse()
+
+        controller.responses(req, resp).block()
+
+        assertEquals(HttpStatus.UNAUTHORIZED, resp.statusCode)
+        assertEquals("Bearer", resp.headers.getFirst(HttpHeaders.WWW_AUTHENTICATE))
+        assertTrue(resp.bodyAsString.block()!!.contains("unauthorized"))
+        assertEquals(0, upstreamCalls.get())
+        assertNull(captured.get())
+    }
+
     private fun newController(
         capturedRequest: AtomicReference<ClientRequest>,
         forwardClientScopeHeaders: Boolean = false,
         configuredOrganization: String = "",
         configuredProject: String = "",
+        internalApiKey: String = TEST_INTERNAL_API_KEY,
         exchange: (ClientRequest) -> Mono<ClientResponse>
     ): ProxyController {
         val exchangeFunction = ExchangeFunction { request ->
@@ -226,8 +331,10 @@ class ProxyControllerTest {
             configuredOrganization = configuredOrganization,
             configuredProject = configuredProject
         )
-        return ProxyController(proxy, jacksonObjectMapper())
+        return ProxyController(proxy, jacksonObjectMapper(), internalApiKey)
     }
+
+    private fun bearerAuth(token: String = TEST_INTERNAL_API_KEY): String = "Bearer $token"
 
     private fun successJsonResponse(): Mono<ClientResponse> {
         return Mono.just(successClientResponse())
@@ -239,5 +346,9 @@ class ProxyControllerTest {
             .header("OpenAI-Request-Id", "req_ok")
             .body("""{"id":"resp_1"}""")
             .build()
+    }
+
+    companion object {
+        private const val TEST_INTERNAL_API_KEY = "test-internal-api-key"
     }
 }

@@ -1,8 +1,10 @@
 package com.ericdream.gateway.web
 
 import com.ericdream.gateway.service.OpenAIProxyService
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.core.io.buffer.DataBufferUtils
 import org.springframework.core.io.buffer.DefaultDataBufferFactory
+import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
 import org.springframework.http.server.reactive.ServerHttpRequest
@@ -22,8 +24,15 @@ import io.netty.handler.timeout.WriteTimeoutException
 class ProxyController(
     private val proxy: OpenAIProxyService,
     private val objectMapper: ObjectMapper,
+    @Value("\${app.security.internal-api-key}") private val internalApiKey: String,
     private val rateLimiter: (String) -> Boolean = { true }
 ) {
+
+    init {
+        require(internalApiKey.isNotBlank() && !internalApiKey.contains("\${")) {
+            "app.security.internal-api-key must be configured with a real internal key"
+        }
+    }
 
     @PostMapping("/v1/responses", produces = ["application/json"], consumes = ["application/json"])
     fun responses(req: ServerHttpRequest, resp: ServerHttpResponse): Mono<Void> {
@@ -40,6 +49,10 @@ class ProxyController(
         resp: ServerHttpResponse,
         requireStream: Boolean
     ): Mono<Void> {
+        if (!hasValidInternalBearer(req)) {
+            return writeUnauthorized(resp)
+        }
+
         val clientKey = req.headers.getFirst("X-Client-Id") ?: "anon"
         if (!rateLimiter(clientKey)) {
             return writeJsonError(resp, HttpStatus.TOO_MANY_REQUESTS, "rate_limit_exceeded")
@@ -81,6 +94,20 @@ class ProxyController(
                         }
                 }
             }
+    }
+
+    private fun hasValidInternalBearer(req: ServerHttpRequest): Boolean {
+        val authorization = req.headers.getFirst(HttpHeaders.AUTHORIZATION)?.trim() ?: return false
+        if (!authorization.startsWith(BEARER_PREFIX, ignoreCase = true)) {
+            return false
+        }
+        val token = authorization.substring(BEARER_PREFIX.length).trim()
+        return token.isNotEmpty() && token == internalApiKey
+    }
+
+    private fun writeUnauthorized(resp: ServerHttpResponse): Mono<Void> {
+        resp.headers.set(HttpHeaders.WWW_AUTHENTICATE, "Bearer")
+        return writeJsonError(resp, HttpStatus.UNAUTHORIZED, "unauthorized")
     }
 
     private fun readBody(req: ServerHttpRequest): Mono<ByteArray> {
@@ -151,5 +178,9 @@ class ProxyController(
             current = current.cause
         }
         return false
+    }
+
+    companion object {
+        private const val BEARER_PREFIX = "Bearer "
     }
 }
