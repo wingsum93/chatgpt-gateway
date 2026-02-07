@@ -3,11 +3,14 @@ package com.ericdream.gateway.service
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.core.io.buffer.DataBuffer
+import org.springframework.http.HttpEntity
 import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatusCode
 import org.springframework.http.MediaType
 import org.springframework.http.server.reactive.ServerHttpRequest
 import org.springframework.stereotype.Service
+import org.springframework.util.MultiValueMap
+import org.springframework.web.reactive.function.BodyInserters
 import org.springframework.web.reactive.function.client.WebClient
 import org.springframework.web.reactive.function.client.bodyToFlux
 import org.springframework.web.reactive.function.client.bodyToMono
@@ -58,7 +61,7 @@ class OpenAIProxyService(
             .post()
             .uri("/v1/responses")
             .headers { outboundHeaders ->
-                applyOutboundHeaders(request, outboundHeaders, scopeHeaders)
+                applyJsonOutboundHeaders(request, outboundHeaders, scopeHeaders)
             }
             .bodyValue(body)
             .exchangeToMono { clientResponse ->
@@ -84,7 +87,7 @@ class OpenAIProxyService(
             .post()
             .uri("/v1/responses")
             .headers { outboundHeaders ->
-                applyOutboundHeaders(request, outboundHeaders, scopeHeaders)
+                applyJsonOutboundHeaders(request, outboundHeaders, scopeHeaders)
             }
             .bodyValue(body)
             .exchangeToMono { clientResponse ->
@@ -99,13 +102,84 @@ class OpenAIProxyService(
             }
     }
 
-    private fun applyOutboundHeaders(
+    fun forwardAudioTranscriptions(
+        request: ServerHttpRequest,
+        multipartBody: MultiValueMap<String, HttpEntity<*>>
+    ): Mono<UpstreamBufferedResponse> {
+        return forwardAudioRequest(
+            request = request,
+            uri = "/v1/audio/transcriptions",
+            multipartBody = multipartBody
+        )
+    }
+
+    fun forwardAudioTranslations(
+        request: ServerHttpRequest,
+        multipartBody: MultiValueMap<String, HttpEntity<*>>
+    ): Mono<UpstreamBufferedResponse> {
+        return forwardAudioRequest(
+            request = request,
+            uri = "/v1/audio/translations",
+            multipartBody = multipartBody
+        )
+    }
+
+    private fun forwardAudioRequest(
+        request: ServerHttpRequest,
+        uri: String,
+        multipartBody: MultiValueMap<String, HttpEntity<*>>
+    ): Mono<UpstreamBufferedResponse> {
+        val scopeHeaders = resolveScopeHeaders(request.headers)
+        return openAiWebClient
+            .post()
+            .uri(uri)
+            .headers { outboundHeaders ->
+                applyMultipartOutboundHeaders(request, outboundHeaders, scopeHeaders)
+            }
+            .body(BodyInserters.fromMultipartData(multipartBody))
+            .exchangeToMono { clientResponse ->
+                log401IfNeeded(
+                    request,
+                    clientResponse.statusCode().value(),
+                    clientResponse.headers().asHttpHeaders(),
+                    scopeHeaders
+                )
+                clientResponse.bodyToMono(ByteArray::class.java)
+                    .defaultIfEmpty(ByteArray(0))
+                    .map { responseBytes ->
+                        UpstreamBufferedResponse(
+                            statusCode = clientResponse.statusCode(),
+                            headers = filterResponseHeaders(clientResponse.headers().asHttpHeaders()),
+                            body = responseBytes
+                        )
+                    }
+            }
+    }
+
+    private fun applyJsonOutboundHeaders(
         request: ServerHttpRequest,
         outboundHeaders: HttpHeaders,
         scopeHeaders: ScopeHeaders
     ) {
         outboundHeaders.setBearerAuth(openAiApiKey)
         outboundHeaders.contentType = MediaType.APPLICATION_JSON
+        applyCommonOutboundHeaders(request, outboundHeaders, scopeHeaders)
+    }
+
+    private fun applyMultipartOutboundHeaders(
+        request: ServerHttpRequest,
+        outboundHeaders: HttpHeaders,
+        scopeHeaders: ScopeHeaders
+    ) {
+        outboundHeaders.setBearerAuth(openAiApiKey)
+        applyCommonOutboundHeaders(request, outboundHeaders, scopeHeaders)
+    }
+
+    private fun applyCommonOutboundHeaders(
+        request: ServerHttpRequest,
+        outboundHeaders: HttpHeaders,
+        scopeHeaders: ScopeHeaders
+    ) {
         copyIfPresent(request.headers, outboundHeaders, HttpHeaders.ACCEPT)
         scopeHeaders.organization?.let { outboundHeaders.set("OpenAI-Organization", it) }
         scopeHeaders.project?.let { outboundHeaders.set("OpenAI-Project", it) }

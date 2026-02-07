@@ -88,6 +88,48 @@ curl -sS -X POST http://localhost:8080/v1/responses \
   -d '{"model":"gpt-5","input":"hello"}'
 ```
 
+### 6) Audio endpoints (validation + proxy)
+
+Gateway endpoints:
+
+- `POST /v1/audio/transcriptions`
+- `POST /v1/audio/translations`
+
+Validation rules:
+
+- `multipart/form-data` only
+- required fields: `file`, `model`
+- optional fields: `response_format`, `prompt` (passed through unchanged)
+- max file size: `25 MB`
+- allowed file formats: `mp3`, `mp4`, `mpeg`, `mpga`, `m4a`, `wav`, `webm`
+- transcription models: `whisper-1`, `gpt-4o-mini-transcribe`, `gpt-4o-transcribe`
+- translation models: `whisper-1` only
+- `response_format`:
+  - `whisper-1`: `json`, `text`, `srt`, `verbose_json`, `vtt`
+  - `gpt-4o-mini-transcribe` / `gpt-4o-transcribe`: `json`, `text`
+
+Transcription example:
+
+```bash
+curl -sS -X POST http://localhost:8080/v1/audio/transcriptions \
+  -H "Authorization: Bearer ${INTERNAL_API_KEY}" \
+  -F "file=@/path/to/audio.mp3" \
+  -F "model=whisper-1" \
+  -F "response_format=json" \
+  -F "prompt=include punctuation"
+```
+
+Translation example:
+
+```bash
+curl -sS -X POST http://localhost:8080/v1/audio/translations \
+  -H "Authorization: Bearer ${INTERNAL_API_KEY}" \
+  -F "file=@/path/to/audio.wav" \
+  -F "model=whisper-1" \
+  -F "response_format=text" \
+  -F "prompt=translate to English"
+```
+
 ### Build and Publish Image
 
 Build a local image for `linux/amd64`:
