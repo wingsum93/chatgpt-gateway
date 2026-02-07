@@ -17,6 +17,7 @@ import org.springframework.web.reactive.function.client.WebClient
 import reactor.core.publisher.Mono
 import tools.jackson.module.kotlin.jacksonObjectMapper
 import java.net.InetSocketAddress
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicReference
 
 class ProxyControllerTest {
@@ -123,6 +124,24 @@ class ProxyControllerTest {
 
         assertEquals(HttpStatus.BAD_GATEWAY, resp.statusCode)
         assertTrue(resp.bodyAsString.block()!!.contains("upstream_request_failed"))
+    }
+
+    @Test
+    fun `responses returns 504 when upstream times out`() {
+        val captured = AtomicReference<ClientRequest>()
+        val controller = newController(captured) {
+            Mono.error(TimeoutException("upstream timed out"))
+        }
+
+        val req = MockServerHttpRequest.post("/v1/responses")
+            .contentType(MediaType.APPLICATION_JSON)
+            .body("""{"model":"gpt-5","input":"hi"}""")
+        val resp = MockServerHttpResponse()
+
+        controller.responses(req, resp).block()
+
+        assertEquals(HttpStatus.GATEWAY_TIMEOUT, resp.statusCode)
+        assertTrue(resp.bodyAsString.block()!!.contains("upstream_timeout"))
     }
 
     @Test

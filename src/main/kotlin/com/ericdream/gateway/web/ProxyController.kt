@@ -12,7 +12,11 @@ import org.springframework.web.bind.annotation.RestController
 import reactor.core.publisher.Mono
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
+import java.net.SocketTimeoutException
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.TimeoutException
+import io.netty.handler.timeout.ReadTimeoutException
+import io.netty.handler.timeout.WriteTimeoutException
 
 @RestController
 class ProxyController(
@@ -55,15 +59,27 @@ class ProxyController(
                     return@flatMap writeJsonError(resp, HttpStatus.BAD_REQUEST, streamValidationError)
                 }
 
-                proxy.forwardResponses(req, body, requireStream)
-                    .flatMap { upstream ->
-                        resp.statusCode = upstream.statusCode
-                        upstream.headers.forEach { name, values -> resp.headers.addAll(name, values) }
-                        resp.writeWith(upstream.body)
-                    }
-                    .onErrorResume {
-                        writeJsonError(resp, HttpStatus.BAD_GATEWAY, "upstream_request_failed")
-                    }
+                if (requireStream) {
+                    proxy.forwardResponsesStream(req, body)
+                        .flatMap { upstream ->
+                            resp.statusCode = upstream.statusCode
+                            upstream.headers.forEach { name, values -> resp.headers.addAll(name, values) }
+                            resp.writeWith(upstream.body)
+                        }
+                        .onErrorResume { throwable ->
+                            mapUpstreamError(resp, throwable)
+                        }
+                } else {
+                    proxy.forwardResponsesNonStream(req, body)
+                        .flatMap { upstream ->
+                            resp.statusCode = upstream.statusCode
+                            upstream.headers.forEach { name, values -> resp.headers.addAll(name, values) }
+                            resp.writeWith(Mono.just(resp.bufferFactory().wrap(upstream.body)))
+                        }
+                        .onErrorResume { throwable ->
+                            mapUpstreamError(resp, throwable)
+                        }
+                }
             }
     }
 
@@ -108,5 +124,32 @@ class ProxyController(
         resp.headers.contentType = MediaType.APPLICATION_JSON
         val payload = """{"error":"$error"}""".toByteArray(StandardCharsets.UTF_8)
         return resp.writeWith(Mono.just(resp.bufferFactory().wrap(payload)))
+    }
+
+    private fun mapUpstreamError(resp: ServerHttpResponse, throwable: Throwable): Mono<Void> {
+        return if (isTimeoutError(throwable)) {
+            writeJsonError(resp, HttpStatus.GATEWAY_TIMEOUT, "upstream_timeout")
+        } else {
+            writeJsonError(resp, HttpStatus.BAD_GATEWAY, "upstream_request_failed")
+        }
+    }
+
+    private fun isTimeoutError(throwable: Throwable): Boolean {
+        var current: Throwable? = throwable
+        while (current != null) {
+            if (current is TimeoutException ||
+                current is SocketTimeoutException ||
+                current is ReadTimeoutException ||
+                current is WriteTimeoutException
+            ) {
+                return true
+            }
+            val message = current.message?.lowercase()
+            if (message != null && (message.contains("timeout") || message.contains("timed out"))) {
+                return true
+            }
+            current = current.cause
+        }
+        return false
     }
 }

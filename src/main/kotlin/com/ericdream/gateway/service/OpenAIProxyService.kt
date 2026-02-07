@@ -10,6 +10,7 @@ import org.springframework.http.server.reactive.ServerHttpRequest
 import org.springframework.stereotype.Service
 import org.springframework.web.reactive.function.client.WebClient
 import org.springframework.web.reactive.function.client.bodyToFlux
+import org.springframework.web.reactive.function.client.bodyToMono
 import reactor.core.publisher.Flux
 import reactor.core.publisher.Mono
 import org.slf4j.LoggerFactory
@@ -18,6 +19,12 @@ data class UpstreamProxyResponse(
     val statusCode: HttpStatusCode,
     val headers: HttpHeaders,
     val body: Flux<DataBuffer>
+)
+
+data class UpstreamBufferedResponse(
+    val statusCode: HttpStatusCode,
+    val headers: HttpHeaders,
+    val body: ByteArray
 )
 
 @Service
@@ -42,38 +49,46 @@ class OpenAIProxyService(
         }
     }
 
-    fun forwardResponses(
+    fun forwardResponsesNonStream(
         request: ServerHttpRequest,
-        body: ByteArray,
-        streaming: Boolean
-    ): Mono<UpstreamProxyResponse> {
+        body: ByteArray
+    ): Mono<UpstreamBufferedResponse> {
         val scopeHeaders = resolveScopeHeaders(request.headers)
-        val client = if (streaming) openAiStreamingWebClient else openAiWebClient
-        return client
+        return openAiWebClient
             .post()
             .uri("/v1/responses")
             .headers { outboundHeaders ->
-                outboundHeaders.setBearerAuth(openAiApiKey)
-                outboundHeaders.contentType = MediaType.APPLICATION_JSON
-                copyIfPresent(request.headers, outboundHeaders, HttpHeaders.ACCEPT)
-                scopeHeaders.organization?.let { outboundHeaders.set("OpenAI-Organization", it) }
-                scopeHeaders.project?.let { outboundHeaders.set("OpenAI-Project", it) }
-                copyIfPresent(request.headers, outboundHeaders, "Idempotency-Key")
-                applyIpHeaders(request, outboundHeaders)
+                applyOutboundHeaders(request, outboundHeaders, scopeHeaders)
             }
             .bodyValue(body)
             .exchangeToMono { clientResponse ->
-                val upstreamRequestId = clientResponse.headers().asHttpHeaders().getFirst("OpenAI-Request-Id")
-                if (clientResponse.statusCode().value() == 401) {
-                    log.warn(
-                        "openai_401 rid={} upstream_rid={} scope_source={} org_set={} project_set={}",
-                        request.headers.getFirst("X-Request-Id") ?: "-",
-                        upstreamRequestId ?: "-",
-                        scopeHeaders.source,
-                        scopeHeaders.organization != null,
-                        scopeHeaders.project != null
-                    )
-                }
+                log401IfNeeded(request, clientResponse.statusCode().value(), clientResponse.headers().asHttpHeaders(), scopeHeaders)
+                clientResponse.bodyToMono(ByteArray::class.java)
+                    .defaultIfEmpty(ByteArray(0))
+                    .map { responseBytes ->
+                        UpstreamBufferedResponse(
+                            statusCode = clientResponse.statusCode(),
+                            headers = filterResponseHeaders(clientResponse.headers().asHttpHeaders()),
+                            body = responseBytes
+                        )
+                    }
+            }
+    }
+
+    fun forwardResponsesStream(
+        request: ServerHttpRequest,
+        body: ByteArray
+    ): Mono<UpstreamProxyResponse> {
+        val scopeHeaders = resolveScopeHeaders(request.headers)
+        return openAiStreamingWebClient
+            .post()
+            .uri("/v1/responses")
+            .headers { outboundHeaders ->
+                applyOutboundHeaders(request, outboundHeaders, scopeHeaders)
+            }
+            .bodyValue(body)
+            .exchangeToMono { clientResponse ->
+                log401IfNeeded(request, clientResponse.statusCode().value(), clientResponse.headers().asHttpHeaders(), scopeHeaders)
                 Mono.just(
                     UpstreamProxyResponse(
                         statusCode = clientResponse.statusCode(),
@@ -82,6 +97,38 @@ class OpenAIProxyService(
                     )
                 )
             }
+    }
+
+    private fun applyOutboundHeaders(
+        request: ServerHttpRequest,
+        outboundHeaders: HttpHeaders,
+        scopeHeaders: ScopeHeaders
+    ) {
+        outboundHeaders.setBearerAuth(openAiApiKey)
+        outboundHeaders.contentType = MediaType.APPLICATION_JSON
+        copyIfPresent(request.headers, outboundHeaders, HttpHeaders.ACCEPT)
+        scopeHeaders.organization?.let { outboundHeaders.set("OpenAI-Organization", it) }
+        scopeHeaders.project?.let { outboundHeaders.set("OpenAI-Project", it) }
+        copyIfPresent(request.headers, outboundHeaders, "Idempotency-Key")
+        applyIpHeaders(request, outboundHeaders)
+    }
+
+    private fun log401IfNeeded(
+        request: ServerHttpRequest,
+        statusCode: Int,
+        responseHeaders: HttpHeaders,
+        scopeHeaders: ScopeHeaders
+    ) {
+        if (statusCode != 401) return
+        val upstreamRequestId = responseHeaders.getFirst("OpenAI-Request-Id")
+        log.warn(
+            "openai_401 rid={} upstream_rid={} scope_source={} org_set={} project_set={}",
+            request.headers.getFirst("X-Request-Id") ?: "-",
+            upstreamRequestId ?: "-",
+            scopeHeaders.source,
+            scopeHeaders.organization != null,
+            scopeHeaders.project != null
+        )
     }
 
     private fun copyIfPresent(source: HttpHeaders, target: HttpHeaders, name: String) {

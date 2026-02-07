@@ -32,7 +32,7 @@ class OpenAIProxyServiceRoutingTest {
         val request = MockServerHttpRequest.post("/v1/responses")
             .contentType(MediaType.APPLICATION_JSON)
             .body("""{"model":"gpt-5","input":"hi"}""")
-        service.forwardResponses(request, """{"model":"gpt-5","input":"hi"}""".toByteArray(), false).block()
+        service.forwardResponsesNonStream(request, """{"model":"gpt-5","input":"hi"}""".toByteArray()).block()
 
         assertEquals(1, nonStreamingCalls.get())
         assertEquals(0, streamingCalls.get())
@@ -56,7 +56,7 @@ class OpenAIProxyServiceRoutingTest {
         val request = MockServerHttpRequest.post("/v1/responses/stream")
             .contentType(MediaType.APPLICATION_JSON)
             .body("""{"model":"gpt-5","input":"hi","stream":true}""")
-        service.forwardResponses(request, """{"model":"gpt-5","input":"hi","stream":true}""".toByteArray(), true).block()
+        service.forwardResponsesStream(request, """{"model":"gpt-5","input":"hi","stream":true}""".toByteArray()).block()
 
         assertEquals(0, nonStreamingCalls.get())
         assertEquals(1, streamingCalls.get())
