@@ -53,11 +53,13 @@ docker pull docker.io/<org>/chatgpt-gateway:<tag>
 ```dotenv
 # required
 OPENAI_API_KEY=sk-...
+OPENROUTER_API_KEY=sk-or-...
 INTERNAL_API_KEY=your-internal-shared-key
 
 # optional
 OPENAI_ORGANIZATION=org_...
 OPENAI_PROJECT=proj_...
+OPENROUTER_TEST_MODEL=openai/gpt-4o-mini
 
 # recommended for VPS/prod
 SPRING_PROFILES_ACTIVE=prod
@@ -86,6 +88,13 @@ curl -sS -X POST http://localhost:8080/v1/responses \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer ${INTERNAL_API_KEY}" \
   -d '{"model":"gpt-5","input":"hello"}'
+```
+
+### 5b) Optional: verify `/openrouter/test` with internal API key
+
+```bash
+curl -sS -X POST http://localhost:8080/openrouter/test \
+  -H "Authorization: Bearer ${INTERNAL_API_KEY}"
 ```
 
 ### 6) Audio endpoints (validation + proxy)

@@ -1,6 +1,7 @@
 package com.ericdream.gateway.web
 
 import com.ericdream.gateway.service.OpenAIProxyService
+import com.ericdream.gateway.service.OpenRouterProxyService
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.core.io.ByteArrayResource
 import org.springframework.core.io.buffer.DataBufferUtils
@@ -31,6 +32,7 @@ import io.netty.handler.timeout.WriteTimeoutException
 @RestController
 class ProxyController(
     private val proxy: OpenAIProxyService,
+    private val openRouterProxy: OpenRouterProxyService,
     private val objectMapper: ObjectMapper,
     @Value("\${app.security.internal-api-key}") private val internalApiKey: String,
     private val rateLimiter: (String) -> Boolean = { true }
@@ -70,6 +72,28 @@ class ProxyController(
             exchange.multipartData,
             AudioEndpoint.TRANSLATIONS
         )
+    }
+
+    @PostMapping("/openrouter/test", produces = ["application/json"])
+    fun openRouterTest(req: ServerHttpRequest, resp: ServerHttpResponse): Mono<Void> {
+        if (!hasValidInternalBearer(req)) {
+            return writeUnauthorized(resp)
+        }
+
+        val clientKey = req.headers.getFirst("X-Client-Id") ?: "anon"
+        if (!rateLimiter(clientKey)) {
+            return writeJsonError(resp, HttpStatus.TOO_MANY_REQUESTS, "rate_limit_exceeded")
+        }
+
+        return openRouterProxy.forwardTestRequest(req)
+            .flatMap { upstream ->
+                resp.statusCode = upstream.statusCode
+                upstream.headers.forEach { name, values -> resp.headers.addAll(name, values) }
+                resp.writeWith(Mono.just(resp.bufferFactory().wrap(upstream.body)))
+            }
+            .onErrorResume { throwable ->
+                mapUpstreamError(resp, throwable)
+            }
     }
 
     private fun forwardValidated(

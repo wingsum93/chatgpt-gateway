@@ -45,6 +45,20 @@ class WebClientConfig {
             .build()
     }
 
+    @Bean("openRouterWebClient")
+    fun openRouterWebClient(
+        builder: WebClient.Builder,
+        @Value("\${app.openrouter.base-url}") baseUrl: String,
+        @Value("\${app.openrouter.http.connect-timeout-ms:30000}") connectTimeoutMs: Int,
+        @Value("\${app.openrouter.http.response-timeout-ms:60000}") responseTimeoutMs: Long
+    ): WebClient {
+        val client = buildHttpClient(connectTimeoutMs, responseTimeoutMs)
+        return builder.clone()
+            .baseUrl(baseUrl)
+            .clientConnector(ReactorClientHttpConnector(client))
+            .build()
+    }
+
     private fun buildHttpClient(connectTimeoutMs: Int, responseTimeoutMs: Long): HttpClient {
         require(connectTimeoutMs > 0) { "app.openai.http.connect-timeout-ms must be > 0" }
         require(responseTimeoutMs >= 0) { "response timeout must be >= 0" }

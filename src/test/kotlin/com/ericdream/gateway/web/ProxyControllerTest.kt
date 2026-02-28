@@ -1,9 +1,10 @@
 package com.ericdream.gateway.web
 
 import com.ericdream.gateway.service.OpenAIProxyService
+import com.ericdream.gateway.service.OpenRouterProxyService
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.springframework.core.io.buffer.DefaultDataBufferFactory
 import org.springframework.http.HttpHeaders
@@ -157,6 +158,116 @@ class ProxyControllerTest {
 
         assertEquals(HttpStatus.GATEWAY_TIMEOUT, resp.statusCode)
         assertTrue(resp.bodyAsString.block()!!.contains("upstream_timeout"))
+    }
+
+    @Test
+    fun `openrouter test forwards status headers and body`() {
+        val capturedOpenAiRequest = AtomicReference<ClientRequest>()
+        val capturedOpenRouterRequest = AtomicReference<ClientRequest>()
+        val controller = newController(
+            capturedRequest = capturedOpenAiRequest,
+            capturedOpenRouterRequest = capturedOpenRouterRequest,
+            openAiExchange = { successJsonResponse() },
+            openRouterExchange = {
+                Mono.just(
+                    ClientResponse.create(HttpStatus.OK)
+                        .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                        .header("X-Request-Id", "or_req_123")
+                        .body("""{"id":"chatcmpl_1"}""")
+                        .build()
+                )
+            }
+        )
+
+        val req = MockServerHttpRequest.post("/openrouter/test")
+            .header(HttpHeaders.AUTHORIZATION, bearerAuth())
+            .header("X-Forwarded-For", "198.51.100.9, 10.0.0.1")
+            .body("")
+        val resp = MockServerHttpResponse()
+
+        controller.openRouterTest(req, resp).block()
+
+        assertEquals(HttpStatus.OK, resp.statusCode)
+        assertEquals(MediaType.APPLICATION_JSON_VALUE, resp.headers.getFirst(HttpHeaders.CONTENT_TYPE))
+        assertEquals("or_req_123", resp.headers.getFirst("X-Request-Id"))
+        assertTrue(resp.bodyAsString.block()!!.contains("chatcmpl_1"))
+        assertEquals("/api/v1/chat/completions", capturedOpenRouterRequest.get().url().path)
+        assertEquals("Bearer test-openrouter-key", capturedOpenRouterRequest.get().headers().getFirst(HttpHeaders.AUTHORIZATION))
+        assertEquals("198.51.100.9, 10.0.0.1", capturedOpenRouterRequest.get().headers().getFirst("X-Forwarded-For"))
+        assertEquals("198.51.100.9", capturedOpenRouterRequest.get().headers().getFirst("X-Real-IP"))
+    }
+
+    @Test
+    fun `openrouter test rejects invalid bearer token before calling upstream`() {
+        val capturedOpenAiRequest = AtomicReference<ClientRequest>()
+        val capturedOpenRouterRequest = AtomicReference<ClientRequest>()
+        val upstreamCalls = AtomicInteger(0)
+        val controller = newController(
+            capturedRequest = capturedOpenAiRequest,
+            capturedOpenRouterRequest = capturedOpenRouterRequest,
+            openAiExchange = { successJsonResponse() },
+            openRouterExchange = {
+                upstreamCalls.incrementAndGet()
+                successJsonResponse()
+            }
+        )
+
+        val req = MockServerHttpRequest.post("/openrouter/test")
+            .header(HttpHeaders.AUTHORIZATION, bearerAuth("wrong-token"))
+            .body("")
+        val resp = MockServerHttpResponse()
+
+        controller.openRouterTest(req, resp).block()
+
+        assertEquals(HttpStatus.UNAUTHORIZED, resp.statusCode)
+        assertEquals("Bearer", resp.headers.getFirst(HttpHeaders.WWW_AUTHENTICATE))
+        assertTrue(resp.bodyAsString.block()!!.contains("unauthorized"))
+        assertEquals(0, upstreamCalls.get())
+        assertNull(capturedOpenRouterRequest.get())
+    }
+
+    @Test
+    fun `openrouter test maps upstream timeout to 504`() {
+        val capturedOpenAiRequest = AtomicReference<ClientRequest>()
+        val capturedOpenRouterRequest = AtomicReference<ClientRequest>()
+        val controller = newController(
+            capturedRequest = capturedOpenAiRequest,
+            capturedOpenRouterRequest = capturedOpenRouterRequest,
+            openAiExchange = { successJsonResponse() },
+            openRouterExchange = { Mono.error(TimeoutException("upstream timed out")) }
+        )
+
+        val req = MockServerHttpRequest.post("/openrouter/test")
+            .header(HttpHeaders.AUTHORIZATION, bearerAuth())
+            .body("")
+        val resp = MockServerHttpResponse()
+
+        controller.openRouterTest(req, resp).block()
+
+        assertEquals(HttpStatus.GATEWAY_TIMEOUT, resp.statusCode)
+        assertTrue(resp.bodyAsString.block()!!.contains("upstream_timeout"))
+    }
+
+    @Test
+    fun `openrouter test maps non timeout upstream failure to 502`() {
+        val capturedOpenAiRequest = AtomicReference<ClientRequest>()
+        val capturedOpenRouterRequest = AtomicReference<ClientRequest>()
+        val controller = newController(
+            capturedRequest = capturedOpenAiRequest,
+            capturedOpenRouterRequest = capturedOpenRouterRequest,
+            openAiExchange = { successJsonResponse() },
+            openRouterExchange = { Mono.error(RuntimeException("boom")) }
+        )
+
+        val req = MockServerHttpRequest.post("/openrouter/test")
+            .header(HttpHeaders.AUTHORIZATION, bearerAuth())
+            .body("")
+        val resp = MockServerHttpResponse()
+
+        controller.openRouterTest(req, resp).block()
+
+        assertEquals(HttpStatus.BAD_GATEWAY, resp.statusCode)
+        assertTrue(resp.bodyAsString.block()!!.contains("upstream_request_failed"))
     }
 
     @Test
@@ -554,15 +665,17 @@ class ProxyControllerTest {
 
     private fun newController(
         capturedRequest: AtomicReference<ClientRequest>,
+        capturedOpenRouterRequest: AtomicReference<ClientRequest> = capturedRequest,
         forwardClientScopeHeaders: Boolean = false,
         configuredOrganization: String = "",
         configuredProject: String = "",
         internalApiKey: String = TEST_INTERNAL_API_KEY,
-        exchange: (ClientRequest) -> Mono<ClientResponse>
+        openAiExchange: (ClientRequest) -> Mono<ClientResponse>,
+        openRouterExchange: (ClientRequest) -> Mono<ClientResponse> = openAiExchange
     ): ProxyController {
         val exchangeFunction = ExchangeFunction { request ->
             capturedRequest.set(request)
-            exchange(request)
+            openAiExchange(request)
         }
         val webClient = WebClient.builder().exchangeFunction(exchangeFunction).build()
         val streamingWebClient = WebClient.builder().exchangeFunction(exchangeFunction).build()
@@ -574,7 +687,17 @@ class ProxyControllerTest {
             configuredOrganization = configuredOrganization,
             configuredProject = configuredProject
         )
-        return ProxyController(proxy, jacksonObjectMapper(), internalApiKey)
+        val openRouterExchangeFunction = ExchangeFunction { request ->
+            capturedOpenRouterRequest.set(request)
+            openRouterExchange(request)
+        }
+        val openRouterClient = WebClient.builder().exchangeFunction(openRouterExchangeFunction).build()
+        val openRouterProxy = OpenRouterProxyService(
+            openRouterWebClient = openRouterClient,
+            openRouterApiKey = "test-openrouter-key",
+            configuredTestModel = "openai/gpt-4o-mini"
+        )
+        return ProxyController(proxy, openRouterProxy, jacksonObjectMapper(), internalApiKey)
     }
 
     private fun bearerAuth(token: String = TEST_INTERNAL_API_KEY): String = "Bearer $token"

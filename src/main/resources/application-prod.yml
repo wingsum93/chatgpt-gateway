@@ -12,6 +12,13 @@ app:
       connect-timeout-ms: 30000
       response-timeout-ms: 60000
       stream-response-timeout-ms: 0
+  openrouter:
+    base-url: https://openrouter.ai
+    api-key: ${OPENROUTER_API_KEY}
+    test-model: ${OPENROUTER_TEST_MODEL:openai/gpt-4o-mini}
+    http:
+      connect-timeout-ms: 30000
+      response-timeout-ms: 60000
   security:
     internal-api-key: ${INTERNAL_API_KEY}
   limits:
