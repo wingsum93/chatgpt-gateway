@@ -97,6 +97,15 @@ curl -sS -X POST http://localhost:8080/openrouter/test \
   -H "Authorization: Bearer ${INTERNAL_API_KEY}"
 ```
 
+### 5c) Optional: verify `/openrouter/dictionary` with internal API key
+
+Returns plain text extracted from `choices[0].message.content`.
+
+```bash
+curl -sS -X POST "http://localhost:8080/openrouter/dictionary?model=openai/gpt-4o-mini&word=apple" \
+  -H "Authorization: Bearer ${INTERNAL_API_KEY}"
+```
+
 ### 6) Audio endpoints (validation + proxy)
 
 Gateway endpoints:

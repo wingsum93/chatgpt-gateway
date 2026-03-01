@@ -19,6 +19,7 @@ import org.springframework.http.server.reactive.ServerHttpRequest
 import org.springframework.http.server.reactive.ServerHttpResponse
 import org.springframework.util.MultiValueMap
 import org.springframework.web.bind.annotation.PostMapping
+import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
 import org.springframework.web.server.ServerWebExchange
 import reactor.core.publisher.Mono
@@ -101,6 +102,61 @@ class ProxyController(
             }
             .onErrorResume { throwable ->
                 mapUpstreamError(resp, throwable)
+            }
+    }
+
+    @PostMapping("/openrouter/dictionary", produces = ["text/plain", "application/json"])
+    fun openRouterDictionary(
+        req: ServerHttpRequest,
+        resp: ServerHttpResponse,
+        @RequestParam("model", required = true) model: String?,
+        @RequestParam("word", required = true) word: String?
+    ): Mono<Void> {
+        if (!hasValidInternalBearer(req)) {
+            log.warn("openrouter_dictionary_rejected rid={} reason=unauthorized", requestId(req))
+            return writeUnauthorized(resp)
+        }
+
+        val clientKey = req.headers.getFirst("X-Client-Id") ?: "anon"
+        if (!rateLimiter(clientKey)) {
+            log.warn(
+                "openrouter_dictionary_rejected rid={} reason=rate_limit_exceeded client_id={}",
+                requestId(req),
+                clientKey
+            )
+            return writeJsonError(resp, HttpStatus.TOO_MANY_REQUESTS, "rate_limit_exceeded")
+        }
+
+        val resolvedModel = model?.trim().orEmpty()
+        if (resolvedModel.isBlank()) {
+            return writeJsonError(resp, HttpStatus.BAD_REQUEST, "model_is_required")
+        }
+
+        val resolvedWord = word?.trim().orEmpty()
+        if (resolvedWord.isBlank()) {
+            return writeJsonError(resp, HttpStatus.BAD_REQUEST, "word_is_required")
+        }
+
+        return openRouterProxy.forwardDictionaryRequest(req, resolvedModel, resolvedWord)
+            .flatMap { dictionaryResult ->
+                resp.statusCode = HttpStatus.OK
+                resp.headers.contentType = MediaType("text", "plain", StandardCharsets.UTF_8)
+                dictionaryResult.headers.forEach { name, values ->
+                    val shouldPassThrough = !name.equals(HttpHeaders.CONTENT_TYPE, ignoreCase = true) &&
+                        !name.equals(HttpHeaders.CONTENT_LENGTH, ignoreCase = true)
+                    if (shouldPassThrough) {
+                        resp.headers.addAll(name, values)
+                    }
+                }
+                val body = dictionaryResult.content.toByteArray(StandardCharsets.UTF_8)
+                resp.writeWith(Mono.just(resp.bufferFactory().wrap(body)))
+            }
+            .onErrorResume { throwable ->
+                if (throwable is OpenRouterProxyService.InvalidUpstreamResponseException) {
+                    writeJsonError(resp, HttpStatus.BAD_GATEWAY, "invalid_upstream_response")
+                } else {
+                    mapUpstreamError(resp, throwable)
+                }
             }
     }
 

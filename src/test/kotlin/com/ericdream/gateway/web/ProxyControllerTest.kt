@@ -271,6 +271,201 @@ class ProxyControllerTest {
     }
 
     @Test
+    fun `openrouter dictionary forwards plain text content from upstream`() {
+        val capturedOpenAiRequest = AtomicReference<ClientRequest>()
+        val capturedOpenRouterRequest = AtomicReference<ClientRequest>()
+        val controller = newController(
+            capturedRequest = capturedOpenAiRequest,
+            capturedOpenRouterRequest = capturedOpenRouterRequest,
+            openAiExchange = { successJsonResponse() },
+            openRouterExchange = {
+                Mono.just(
+                    ClientResponse.create(HttpStatus.OK)
+                        .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                        .header("X-Request-Id", "or_req_dictionary")
+                        .body("""{"choices":[{"message":{"content":"蘋果"}}]}""")
+                        .build()
+                )
+            }
+        )
+
+        val req = MockServerHttpRequest.post("/openrouter/dictionary?model=openai/gpt-4o-mini&word=apple")
+            .header(HttpHeaders.AUTHORIZATION, bearerAuth())
+            .body("")
+        val resp = MockServerHttpResponse()
+
+        controller.openRouterDictionary(req, resp, "openai/gpt-4o-mini", "apple").block()
+
+        assertEquals(HttpStatus.OK, resp.statusCode)
+        assertTrue((resp.headers.contentType?.toString() ?: "").contains("text/plain"))
+        assertEquals("or_req_dictionary", resp.headers.getFirst("X-Request-Id"))
+        assertEquals("蘋果", resp.bodyAsString.block())
+        assertEquals("/api/v1/chat/completions", capturedOpenRouterRequest.get().url().path)
+    }
+
+    @Test
+    fun `openrouter dictionary rejects invalid bearer token before calling upstream`() {
+        val capturedOpenAiRequest = AtomicReference<ClientRequest>()
+        val capturedOpenRouterRequest = AtomicReference<ClientRequest>()
+        val upstreamCalls = AtomicInteger(0)
+        val controller = newController(
+            capturedRequest = capturedOpenAiRequest,
+            capturedOpenRouterRequest = capturedOpenRouterRequest,
+            openAiExchange = { successJsonResponse() },
+            openRouterExchange = {
+                upstreamCalls.incrementAndGet()
+                successJsonResponse()
+            }
+        )
+
+        val req = MockServerHttpRequest.post("/openrouter/dictionary?model=openai/gpt-4o-mini&word=apple")
+            .header(HttpHeaders.AUTHORIZATION, bearerAuth("wrong-token"))
+            .body("")
+        val resp = MockServerHttpResponse()
+
+        controller.openRouterDictionary(req, resp, "openai/gpt-4o-mini", "apple").block()
+
+        assertEquals(HttpStatus.UNAUTHORIZED, resp.statusCode)
+        assertEquals("Bearer", resp.headers.getFirst(HttpHeaders.WWW_AUTHENTICATE))
+        assertTrue(resp.bodyAsString.block()!!.contains("unauthorized"))
+        assertEquals(0, upstreamCalls.get())
+        assertNull(capturedOpenRouterRequest.get())
+    }
+
+    @Test
+    fun `openrouter dictionary rejects rate limited request before calling upstream`() {
+        val capturedOpenAiRequest = AtomicReference<ClientRequest>()
+        val capturedOpenRouterRequest = AtomicReference<ClientRequest>()
+        val upstreamCalls = AtomicInteger(0)
+        val controller = newController(
+            capturedRequest = capturedOpenAiRequest,
+            capturedOpenRouterRequest = capturedOpenRouterRequest,
+            rateLimiter = { false },
+            openAiExchange = { successJsonResponse() },
+            openRouterExchange = {
+                upstreamCalls.incrementAndGet()
+                successJsonResponse()
+            }
+        )
+
+        val req = MockServerHttpRequest.post("/openrouter/dictionary?model=openai/gpt-4o-mini&word=apple")
+            .header(HttpHeaders.AUTHORIZATION, bearerAuth())
+            .header("X-Client-Id", "client-1")
+            .body("")
+        val resp = MockServerHttpResponse()
+
+        controller.openRouterDictionary(req, resp, "openai/gpt-4o-mini", "apple").block()
+
+        assertEquals(HttpStatus.TOO_MANY_REQUESTS, resp.statusCode)
+        assertTrue(resp.bodyAsString.block()!!.contains("rate_limit_exceeded"))
+        assertEquals(0, upstreamCalls.get())
+        assertNull(capturedOpenRouterRequest.get())
+    }
+
+    @Test
+    fun `openrouter dictionary validates required query params`() {
+        val capturedOpenAiRequest = AtomicReference<ClientRequest>()
+        val capturedOpenRouterRequest = AtomicReference<ClientRequest>()
+        val controller = newController(
+            capturedRequest = capturedOpenAiRequest,
+            capturedOpenRouterRequest = capturedOpenRouterRequest,
+            openAiExchange = { successJsonResponse() },
+            openRouterExchange = { successJsonResponse() }
+        )
+
+        val missingModelReq = MockServerHttpRequest.post("/openrouter/dictionary?word=apple")
+            .header(HttpHeaders.AUTHORIZATION, bearerAuth())
+            .body("")
+        val missingModelResp = MockServerHttpResponse()
+        controller.openRouterDictionary(missingModelReq, missingModelResp, null, "apple").block()
+        assertEquals(HttpStatus.BAD_REQUEST, missingModelResp.statusCode)
+        assertTrue(missingModelResp.bodyAsString.block()!!.contains("model_is_required"))
+
+        val missingWordReq = MockServerHttpRequest.post("/openrouter/dictionary?model=openai/gpt-4o-mini")
+            .header(HttpHeaders.AUTHORIZATION, bearerAuth())
+            .body("")
+        val missingWordResp = MockServerHttpResponse()
+        controller.openRouterDictionary(missingWordReq, missingWordResp, "openai/gpt-4o-mini", " ").block()
+        assertEquals(HttpStatus.BAD_REQUEST, missingWordResp.statusCode)
+        assertTrue(missingWordResp.bodyAsString.block()!!.contains("word_is_required"))
+
+        assertNull(capturedOpenRouterRequest.get())
+    }
+
+    @Test
+    fun `openrouter dictionary maps upstream timeout to 504`() {
+        val capturedOpenAiRequest = AtomicReference<ClientRequest>()
+        val capturedOpenRouterRequest = AtomicReference<ClientRequest>()
+        val controller = newController(
+            capturedRequest = capturedOpenAiRequest,
+            capturedOpenRouterRequest = capturedOpenRouterRequest,
+            openAiExchange = { successJsonResponse() },
+            openRouterExchange = { Mono.error(TimeoutException("upstream timed out")) }
+        )
+
+        val req = MockServerHttpRequest.post("/openrouter/dictionary?model=openai/gpt-4o-mini&word=apple")
+            .header(HttpHeaders.AUTHORIZATION, bearerAuth())
+            .body("")
+        val resp = MockServerHttpResponse()
+
+        controller.openRouterDictionary(req, resp, "openai/gpt-4o-mini", "apple").block()
+
+        assertEquals(HttpStatus.GATEWAY_TIMEOUT, resp.statusCode)
+        assertTrue(resp.bodyAsString.block()!!.contains("upstream_timeout"))
+    }
+
+    @Test
+    fun `openrouter dictionary maps non timeout upstream failure to 502`() {
+        val capturedOpenAiRequest = AtomicReference<ClientRequest>()
+        val capturedOpenRouterRequest = AtomicReference<ClientRequest>()
+        val controller = newController(
+            capturedRequest = capturedOpenAiRequest,
+            capturedOpenRouterRequest = capturedOpenRouterRequest,
+            openAiExchange = { successJsonResponse() },
+            openRouterExchange = { Mono.error(RuntimeException("boom")) }
+        )
+
+        val req = MockServerHttpRequest.post("/openrouter/dictionary?model=openai/gpt-4o-mini&word=apple")
+            .header(HttpHeaders.AUTHORIZATION, bearerAuth())
+            .body("")
+        val resp = MockServerHttpResponse()
+
+        controller.openRouterDictionary(req, resp, "openai/gpt-4o-mini", "apple").block()
+
+        assertEquals(HttpStatus.BAD_GATEWAY, resp.statusCode)
+        assertTrue(resp.bodyAsString.block()!!.contains("upstream_request_failed"))
+    }
+
+    @Test
+    fun `openrouter dictionary maps invalid upstream payload to 502`() {
+        val capturedOpenAiRequest = AtomicReference<ClientRequest>()
+        val capturedOpenRouterRequest = AtomicReference<ClientRequest>()
+        val controller = newController(
+            capturedRequest = capturedOpenAiRequest,
+            capturedOpenRouterRequest = capturedOpenRouterRequest,
+            openAiExchange = { successJsonResponse() },
+            openRouterExchange = {
+                Mono.just(
+                    ClientResponse.create(HttpStatus.OK)
+                        .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                        .body("""{"id":"chatcmpl_1"}""")
+                        .build()
+                )
+            }
+        )
+
+        val req = MockServerHttpRequest.post("/openrouter/dictionary?model=openai/gpt-4o-mini&word=apple")
+            .header(HttpHeaders.AUTHORIZATION, bearerAuth())
+            .body("")
+        val resp = MockServerHttpResponse()
+
+        controller.openRouterDictionary(req, resp, "openai/gpt-4o-mini", "apple").block()
+
+        assertEquals(HttpStatus.BAD_GATEWAY, resp.statusCode)
+        assertTrue(resp.bodyAsString.block()!!.contains("invalid_upstream_response"))
+    }
+
+    @Test
     fun `responses forwards inbound scope headers when legacy forwarding enabled`() {
         val captured = AtomicReference<ClientRequest>()
         val controller = newController(
@@ -670,6 +865,7 @@ class ProxyControllerTest {
         configuredOrganization: String = "",
         configuredProject: String = "",
         internalApiKey: String = TEST_INTERNAL_API_KEY,
+        rateLimiter: (String) -> Boolean = { true },
         openRouterExchange: ((ClientRequest) -> Mono<ClientResponse>)? = null,
         openAiExchange: (ClientRequest) -> Mono<ClientResponse> = { successJsonResponse() }
     ): ProxyController {
@@ -698,7 +894,7 @@ class ProxyControllerTest {
             openRouterApiKey = "test-openrouter-key",
             configuredTestModel = "openai/gpt-4o-mini"
         )
-        return ProxyController(proxy, openRouterProxy, jacksonObjectMapper(), internalApiKey)
+        return ProxyController(proxy, openRouterProxy, jacksonObjectMapper(), internalApiKey, rateLimiter)
     }
 
     private fun bearerAuth(token: String = TEST_INTERNAL_API_KEY): String = "Bearer $token"

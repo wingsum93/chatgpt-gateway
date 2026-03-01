@@ -1,6 +1,7 @@
 package com.ericdream.gateway.service
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.springframework.http.HttpHeaders
@@ -108,6 +109,95 @@ class OpenRouterProxyServiceTest {
 
         val payload = jacksonObjectMapper().readTree(requestBody.get())
         assertEquals("anthropic/claude-3.5-sonnet", payload.get("model").asText())
+    }
+
+    @Test
+    fun `forwardDictionaryRequest routes to chat completions and returns extracted content`() {
+        val capturedRequest = AtomicReference<ClientRequest>()
+        val capturedBody = AtomicReference<String>()
+        val service = newService { request ->
+            capturedRequest.set(request)
+            capturedBody.set(extractBody(request))
+            Mono.just(
+                ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                    .header("X-Request-Id", "or_req_dict_1")
+                    .body("""{"choices":[{"message":{"content":"蘋果"}}]}""")
+                    .build()
+            )
+        }
+
+        val request = MockServerHttpRequest.post("/openrouter/dictionary?model=openai/gpt-4o-mini&word=apple")
+            .header("X-Forwarded-For", "198.51.100.9, 10.0.0.1")
+            .header(HttpHeaders.ACCEPT, MediaType.TEXT_PLAIN_VALUE)
+            .header("Idempotency-Key", "idem_456")
+            .body("")
+
+        val response = service.forwardDictionaryRequest(
+            request = request,
+            model = "openai/gpt-4o-mini",
+            word = "apple"
+        ).block()!!
+
+        val payload = jacksonObjectMapper().readTree(capturedBody.get())
+        assertEquals("/api/v1/chat/completions", capturedRequest.get().url().path)
+        assertEquals("Bearer test-openrouter-key", capturedRequest.get().headers().getFirst(HttpHeaders.AUTHORIZATION))
+        assertEquals(MediaType.APPLICATION_JSON_VALUE, capturedRequest.get().headers().getFirst(HttpHeaders.CONTENT_TYPE))
+        assertEquals("198.51.100.9, 10.0.0.1", capturedRequest.get().headers().getFirst("X-Forwarded-For"))
+        assertEquals("198.51.100.9", capturedRequest.get().headers().getFirst("X-Real-IP"))
+        assertEquals("idem_456", capturedRequest.get().headers().getFirst("Idempotency-Key"))
+        assertEquals("or_req_dict_1", response.headers.getFirst("X-Request-Id"))
+        assertEquals("蘋果", response.content)
+
+        assertEquals("openai/gpt-4o-mini", payload.get("model").asText())
+        assertEquals(128, payload.get("max_tokens").asInt())
+        assertEquals(2, payload.get("messages").size())
+        assertEquals("system", payload.get("messages").get(0).get("role").asText())
+        assertTrue(payload.get("messages").get(0).get("content").asText().contains("繁體中文"))
+        assertEquals("user", payload.get("messages").get(1).get("role").asText())
+        assertEquals("apple", payload.get("messages").get(1).get("content").asText())
+    }
+
+    @Test
+    fun `forwardDictionaryRequest fails when upstream response content is missing`() {
+        val service = newService {
+            Mono.just(
+                ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                    .body("""{"id":"chatcmpl_1"}""")
+                    .build()
+            )
+        }
+        val request = MockServerHttpRequest.post("/openrouter/dictionary?model=openai/gpt-4o-mini&word=apple").body("")
+
+        assertThrows(OpenRouterProxyService.InvalidUpstreamResponseException::class.java) {
+            service.forwardDictionaryRequest(
+                request = request,
+                model = "openai/gpt-4o-mini",
+                word = "apple"
+            ).block()
+        }
+    }
+
+    @Test
+    fun `forwardDictionaryRequest fails when api key is missing`() {
+        val webClient = WebClient.builder()
+            .exchangeFunction { Mono.just(okResponse()) }
+            .build()
+        val service = OpenRouterProxyService(
+            openRouterWebClient = webClient,
+            openRouterApiKey = "",
+            configuredTestModel = "openai/gpt-4o-mini"
+        )
+
+        val request = MockServerHttpRequest.post("/openrouter/dictionary?model=openai/gpt-4o-mini&word=apple").body("")
+        assertThrows(IllegalStateException::class.java) {
+            service.forwardDictionaryRequest(
+                request = request,
+                model = "openai/gpt-4o-mini",
+                word = "apple"
+            ).block()
+        }
     }
 
     private fun newService(

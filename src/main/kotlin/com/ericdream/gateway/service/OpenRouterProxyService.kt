@@ -10,6 +10,7 @@ import org.springframework.web.reactive.function.client.WebClient
 import org.springframework.web.reactive.function.client.bodyToMono
 import org.slf4j.LoggerFactory
 import reactor.core.publisher.Mono
+import tools.jackson.module.kotlin.jacksonObjectMapper
 
 @Service
 class OpenRouterProxyService(
@@ -19,6 +20,7 @@ class OpenRouterProxyService(
     @Value("\${app.openrouter.test-model:openai/gpt-4o-mini}") configuredTestModel: String = "openai/gpt-4o-mini"
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
+    private val objectMapper = jacksonObjectMapper()
     private val resolvedOpenRouterApiKey: String? = openRouterApiKey.trim()
         .takeIf { it.isNotEmpty() && !it.contains("\${") }
     private val testModel: String = configuredTestModel.trim()
@@ -75,11 +77,76 @@ class OpenRouterProxyService(
             }
     }
 
+    fun forwardDictionaryRequest(
+        request: ServerHttpRequest,
+        model: String,
+        word: String
+    ): Mono<DictionaryResult> {
+        val requestId = requestId(request.headers)
+        val apiKey = resolvedOpenRouterApiKey
+            ?: run {
+                log.error("openrouter_config_error rid={} endpoint=openrouter_dictionary reason=missing_api_key", requestId)
+                return Mono.error(IllegalStateException("app.openrouter.api-key must be configured"))
+            }
+        return openRouterWebClient
+            .post()
+            .uri("/api/v1/chat/completions")
+            .headers { outboundHeaders ->
+                applyOutboundHeaders(request, outboundHeaders, apiKey)
+            }
+            .bodyValue(buildDictionaryPayload(model.trim(), word.trim()))
+            .exchangeToMono { clientResponse ->
+                val responseHeaders = clientResponse.headers().asHttpHeaders()
+                val status = clientResponse.statusCode().value()
+                if (status >= 400) {
+                    log.warn(
+                        "openrouter_upstream_non_success rid={} endpoint=openrouter_dictionary status={} upstream_rid={}",
+                        requestId,
+                        status,
+                        requestId(responseHeaders)
+                    )
+                }
+                clientResponse.bodyToMono(ByteArray::class.java)
+                    .defaultIfEmpty(ByteArray(0))
+                    .map { responseBytes ->
+                        val content = extractDictionaryContent(responseBytes)
+                            ?: throw InvalidUpstreamResponseException("missing choices[0].message.content")
+                        DictionaryResult(
+                            content = content,
+                            headers = filterResponseHeaders(responseHeaders)
+                        )
+                    }
+            }
+            .doOnError { throwable ->
+                log.error(
+                    "openrouter_request_failed rid={} endpoint=openrouter_dictionary error_type={} error={}",
+                    requestId,
+                    throwable.javaClass.simpleName,
+                    throwable.message ?: "-",
+                    throwable
+                )
+            }
+    }
+
     internal fun buildTestPayload(): OpenRouterChatCompletionRequest {
         return OpenRouterChatCompletionRequest(
             model = testModel,
             messages = listOf(OpenRouterMessage(role = "user", content = "reply with: ok")),
             max_tokens = 8
+        )
+    }
+
+    internal fun buildDictionaryPayload(model: String, word: String): OpenRouterChatCompletionRequest {
+        return OpenRouterChatCompletionRequest(
+            model = model,
+            messages = listOf(
+                OpenRouterMessage(
+                    role = "system",
+                    content = "你是英漢字典。請用繁體中文提供英文單字的中文意思，簡潔，僅輸出中文釋義，不要其他內容。"
+                ),
+                OpenRouterMessage(role = "user", content = word)
+            ),
+            max_tokens = 128
         )
     }
 
@@ -133,6 +200,34 @@ class OpenRouterProxyService(
             ?.takeIf { it.isNotEmpty() }
             ?: "-"
     }
+
+    private fun extractDictionaryContent(responseBytes: ByteArray): String? {
+        if (responseBytes.isEmpty()) return null
+        return try {
+            val payload = objectMapper.readTree(responseBytes)
+            val choices = payload.path("choices")
+            if (!choices.isArray || choices.isEmpty) {
+                null
+            } else {
+                choices[0]
+                    .path("message")
+                    .path("content")
+                    .takeIf { it.isTextual }
+                    ?.asText()
+                    ?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    data class DictionaryResult(
+        val content: String,
+        val headers: HttpHeaders
+    )
+
+    class InvalidUpstreamResponseException(message: String) : RuntimeException(message)
 
     internal data class OpenRouterChatCompletionRequest(
         val model: String,
