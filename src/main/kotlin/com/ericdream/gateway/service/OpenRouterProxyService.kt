@@ -81,7 +81,7 @@ class OpenRouterProxyService(
         request: ServerHttpRequest,
         model: String,
         word: String
-    ): Mono<DictionaryResult> {
+    ): Mono<UpstreamBufferedResponse> {
         val requestId = requestId(request.headers)
         val apiKey = resolvedOpenRouterApiKey
             ?: run {
@@ -109,11 +109,10 @@ class OpenRouterProxyService(
                 clientResponse.bodyToMono(ByteArray::class.java)
                     .defaultIfEmpty(ByteArray(0))
                     .map { responseBytes ->
-                        val content = extractDictionaryContent(responseBytes)
-                            ?: throw InvalidUpstreamResponseException("missing choices[0].message.content")
-                        DictionaryResult(
-                            content = content,
-                            headers = filterResponseHeaders(responseHeaders)
+                        UpstreamBufferedResponse(
+                            statusCode = clientResponse.statusCode(),
+                            headers = filterResponseHeaders(responseHeaders),
+                            body = responseBytes
                         )
                     }
             }

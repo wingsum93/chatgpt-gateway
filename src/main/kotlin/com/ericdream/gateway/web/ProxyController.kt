@@ -138,25 +138,13 @@ class ProxyController(
         }
 
         return openRouterProxy.forwardDictionaryRequest(req, resolvedModel, resolvedWord)
-            .flatMap { dictionaryResult ->
-                resp.statusCode = HttpStatus.OK
-                resp.headers.contentType = MediaType("text", "plain", StandardCharsets.UTF_8)
-                dictionaryResult.headers.forEach { name, values ->
-                    val shouldPassThrough = !name.equals(HttpHeaders.CONTENT_TYPE, ignoreCase = true) &&
-                        !name.equals(HttpHeaders.CONTENT_LENGTH, ignoreCase = true)
-                    if (shouldPassThrough) {
-                        resp.headers.addAll(name, values)
-                    }
-                }
-                val body = dictionaryResult.content.toByteArray(StandardCharsets.UTF_8)
-                resp.writeWith(Mono.just(resp.bufferFactory().wrap(body)))
+            .flatMap { upstream ->
+                resp.statusCode = upstream.statusCode
+                upstream.headers.forEach { name, values -> resp.headers.addAll(name, values) }
+                resp.writeWith(Mono.just(resp.bufferFactory().wrap(upstream.body)))
             }
             .onErrorResume { throwable ->
-                if (throwable is OpenRouterProxyService.InvalidUpstreamResponseException) {
-                    writeJsonError(resp, HttpStatus.BAD_GATEWAY, "invalid_upstream_response")
-                } else {
-                    mapUpstreamError(resp, throwable)
-                }
+                mapUpstreamError(resp, throwable)
             }
     }
 
