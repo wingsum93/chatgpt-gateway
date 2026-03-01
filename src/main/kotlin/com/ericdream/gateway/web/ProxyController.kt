@@ -3,6 +3,7 @@ package com.ericdream.gateway.web
 import com.ericdream.gateway.service.OpenAIProxyService
 import com.ericdream.gateway.service.OpenRouterProxyService
 import org.springframework.beans.factory.annotation.Value
+import org.slf4j.LoggerFactory
 import org.springframework.core.io.ByteArrayResource
 import org.springframework.core.io.buffer.DataBufferUtils
 import org.springframework.core.io.buffer.DefaultDataBufferFactory
@@ -37,6 +38,7 @@ class ProxyController(
     @Value("\${app.security.internal-api-key}") private val internalApiKey: String,
     private val rateLimiter: (String) -> Boolean = { true }
 ) {
+    private val log = LoggerFactory.getLogger(javaClass)
 
     init {
         require(internalApiKey.isNotBlank() && !internalApiKey.contains("\${")) {
@@ -77,11 +79,17 @@ class ProxyController(
     @PostMapping("/openrouter/test", produces = ["application/json"])
     fun openRouterTest(req: ServerHttpRequest, resp: ServerHttpResponse): Mono<Void> {
         if (!hasValidInternalBearer(req)) {
+            log.warn("openrouter_test_rejected rid={} reason=unauthorized", requestId(req))
             return writeUnauthorized(resp)
         }
 
         val clientKey = req.headers.getFirst("X-Client-Id") ?: "anon"
         if (!rateLimiter(clientKey)) {
+            log.warn(
+                "openrouter_test_rejected rid={} reason=rate_limit_exceeded client_id={}",
+                requestId(req),
+                clientKey
+            )
             return writeJsonError(resp, HttpStatus.TOO_MANY_REQUESTS, "rate_limit_exceeded")
         }
 
@@ -257,6 +265,13 @@ class ProxyController(
         }
         val token = authorization.substring(BEARER_PREFIX.length).trim()
         return token.isNotEmpty() && token == internalApiKey
+    }
+
+    private fun requestId(req: ServerHttpRequest): String {
+        return req.headers.getFirst("X-Request-Id")
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: "-"
     }
 
     private fun writeUnauthorized(resp: ServerHttpResponse): Mono<Void> {

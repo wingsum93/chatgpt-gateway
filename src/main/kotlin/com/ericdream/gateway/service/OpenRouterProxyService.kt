@@ -8,6 +8,7 @@ import org.springframework.http.server.reactive.ServerHttpRequest
 import org.springframework.stereotype.Service
 import org.springframework.web.reactive.function.client.WebClient
 import org.springframework.web.reactive.function.client.bodyToMono
+import org.slf4j.LoggerFactory
 import reactor.core.publisher.Mono
 
 @Service
@@ -17,6 +18,7 @@ class OpenRouterProxyService(
     @Value("\${app.openrouter.api-key}") private val openRouterApiKey: String,
     @Value("\${app.openrouter.test-model:openai/gpt-4o-mini}") configuredTestModel: String = "openai/gpt-4o-mini"
 ) {
+    private val log = LoggerFactory.getLogger(javaClass)
     private val resolvedOpenRouterApiKey: String? = openRouterApiKey.trim()
         .takeIf { it.isNotEmpty() && !it.contains("\${") }
     private val testModel: String = configuredTestModel.trim()
@@ -28,8 +30,12 @@ class OpenRouterProxyService(
     }
 
     fun forwardTestRequest(request: ServerHttpRequest): Mono<UpstreamBufferedResponse> {
+        val requestId = requestId(request.headers)
         val apiKey = resolvedOpenRouterApiKey
-            ?: return Mono.error(IllegalStateException("app.openrouter.api-key must be configured"))
+            ?: run {
+                log.error("openrouter_config_error rid={} endpoint=openrouter_test reason=missing_api_key", requestId)
+                return Mono.error(IllegalStateException("app.openrouter.api-key must be configured"))
+            }
         return openRouterWebClient
             .post()
             .uri("/api/v1/chat/completions")
@@ -38,15 +44,34 @@ class OpenRouterProxyService(
             }
             .bodyValue(buildTestPayload())
             .exchangeToMono { clientResponse ->
+                val responseHeaders = clientResponse.headers().asHttpHeaders()
+                val status = clientResponse.statusCode().value()
+                if (status >= 400) {
+                    log.warn(
+                        "openrouter_upstream_non_success rid={} endpoint=openrouter_test status={} upstream_rid={}",
+                        requestId,
+                        status,
+                        requestId(responseHeaders)
+                    )
+                }
                 clientResponse.bodyToMono(ByteArray::class.java)
                     .defaultIfEmpty(ByteArray(0))
                     .map { responseBytes ->
                         UpstreamBufferedResponse(
                             statusCode = clientResponse.statusCode(),
-                            headers = filterResponseHeaders(clientResponse.headers().asHttpHeaders()),
+                            headers = filterResponseHeaders(responseHeaders),
                             body = responseBytes
                         )
                     }
+            }
+            .doOnError { throwable ->
+                log.error(
+                    "openrouter_request_failed rid={} endpoint=openrouter_test error_type={} error={}",
+                    requestId,
+                    throwable.javaClass.simpleName,
+                    throwable.message ?: "-",
+                    throwable
+                )
             }
     }
 
@@ -100,6 +125,13 @@ class OpenRouterProxyService(
     private fun copyIfPresent(source: HttpHeaders, target: HttpHeaders, name: String) {
         val value = source.getFirst(name) ?: return
         target.set(name, value)
+    }
+
+    private fun requestId(headers: HttpHeaders): String {
+        return headers.getFirst("X-Request-Id")
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: "-"
     }
 
     internal data class OpenRouterChatCompletionRequest(
