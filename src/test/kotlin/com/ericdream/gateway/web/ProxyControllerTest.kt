@@ -670,8 +670,8 @@ class ProxyControllerTest {
         configuredOrganization: String = "",
         configuredProject: String = "",
         internalApiKey: String = TEST_INTERNAL_API_KEY,
-        openAiExchange: (ClientRequest) -> Mono<ClientResponse>,
-        openRouterExchange: (ClientRequest) -> Mono<ClientResponse> = openAiExchange
+        openRouterExchange: ((ClientRequest) -> Mono<ClientResponse>)? = null,
+        openAiExchange: (ClientRequest) -> Mono<ClientResponse> = { successJsonResponse() }
     ): ProxyController {
         val exchangeFunction = ExchangeFunction { request ->
             capturedRequest.set(request)
@@ -687,9 +687,10 @@ class ProxyControllerTest {
             configuredOrganization = configuredOrganization,
             configuredProject = configuredProject
         )
+        val resolvedOpenRouterExchange = openRouterExchange ?: openAiExchange
         val openRouterExchangeFunction = ExchangeFunction { request ->
             capturedOpenRouterRequest.set(request)
-            openRouterExchange(request)
+            resolvedOpenRouterExchange(request)
         }
         val openRouterClient = WebClient.builder().exchangeFunction(openRouterExchangeFunction).build()
         val openRouterProxy = OpenRouterProxyService(

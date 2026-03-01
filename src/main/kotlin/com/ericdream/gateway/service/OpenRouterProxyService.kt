@@ -9,7 +9,6 @@ import org.springframework.stereotype.Service
 import org.springframework.web.reactive.function.client.WebClient
 import org.springframework.web.reactive.function.client.bodyToMono
 import reactor.core.publisher.Mono
-import tools.jackson.annotation.JsonProperty
 
 @Service
 class OpenRouterProxyService(
@@ -18,23 +17,24 @@ class OpenRouterProxyService(
     @Value("\${app.openrouter.api-key}") private val openRouterApiKey: String,
     @Value("\${app.openrouter.test-model:openai/gpt-4o-mini}") configuredTestModel: String = "openai/gpt-4o-mini"
 ) {
+    private val resolvedOpenRouterApiKey: String? = openRouterApiKey.trim()
+        .takeIf { it.isNotEmpty() && !it.contains("\${") }
     private val testModel: String = configuredTestModel.trim()
 
     init {
-        require(openRouterApiKey.isNotBlank() && !openRouterApiKey.contains("\${")) {
-            "app.openrouter.api-key must be configured with a real OpenRouter key"
-        }
         require(testModel.isNotBlank()) {
             "app.openrouter.test-model must not be blank"
         }
     }
 
     fun forwardTestRequest(request: ServerHttpRequest): Mono<UpstreamBufferedResponse> {
+        val apiKey = resolvedOpenRouterApiKey
+            ?: return Mono.error(IllegalStateException("app.openrouter.api-key must be configured"))
         return openRouterWebClient
             .post()
             .uri("/api/v1/chat/completions")
             .headers { outboundHeaders ->
-                applyOutboundHeaders(request, outboundHeaders)
+                applyOutboundHeaders(request, outboundHeaders, apiKey)
             }
             .bodyValue(buildTestPayload())
             .exchangeToMono { clientResponse ->
@@ -54,12 +54,12 @@ class OpenRouterProxyService(
         return OpenRouterChatCompletionRequest(
             model = testModel,
             messages = listOf(OpenRouterMessage(role = "user", content = "reply with: ok")),
-            maxTokens = 8
+            max_tokens = 8
         )
     }
 
-    private fun applyOutboundHeaders(request: ServerHttpRequest, outboundHeaders: HttpHeaders) {
-        outboundHeaders.setBearerAuth(openRouterApiKey)
+    private fun applyOutboundHeaders(request: ServerHttpRequest, outboundHeaders: HttpHeaders, apiKey: String) {
+        outboundHeaders.setBearerAuth(apiKey)
         outboundHeaders.contentType = MediaType.APPLICATION_JSON
         copyIfPresent(request.headers, outboundHeaders, HttpHeaders.ACCEPT)
         copyIfPresent(request.headers, outboundHeaders, "Idempotency-Key")
@@ -105,8 +105,7 @@ class OpenRouterProxyService(
     internal data class OpenRouterChatCompletionRequest(
         val model: String,
         val messages: List<OpenRouterMessage>,
-        @JsonProperty("max_tokens")
-        val maxTokens: Int
+        val max_tokens: Int
     )
 
     internal data class OpenRouterMessage(

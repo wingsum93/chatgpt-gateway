@@ -78,17 +78,20 @@ class OpenRouterProxyServiceTest {
     }
 
     @Test
-    fun `service fails fast when api key is missing`() {
+    fun `forwardTestRequest fails when api key is missing`() {
         val webClient = WebClient.builder()
             .exchangeFunction { Mono.just(okResponse()) }
             .build()
 
-        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException::class.java) {
-            OpenRouterProxyService(
-                openRouterWebClient = webClient,
-                openRouterApiKey = "",
-                configuredTestModel = "openai/gpt-4o-mini"
-            )
+        val service = OpenRouterProxyService(
+            openRouterWebClient = webClient,
+            openRouterApiKey = "",
+            configuredTestModel = "openai/gpt-4o-mini"
+        )
+
+        val request = MockServerHttpRequest.post("/openrouter/test").body("")
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
+            service.forwardTestRequest(request).block()
         }
     }
 
