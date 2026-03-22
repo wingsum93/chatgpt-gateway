@@ -34,6 +34,35 @@ A Spring Boot reactive gateway service built with Kotlin for managing ChatGPT AP
 ./gradlew bootRun
 ```
 
+## API Endpoints
+
+All endpoints in `ProxyController` require:
+
+- `Authorization: Bearer ${INTERNAL_API_KEY}`
+- `X-Client-Id` is optional (used for rate limiting; defaults to `anon` if missing)
+
+Current routes:
+
+| Method | Path | Content-Type | Required fields |
+| --- | --- | --- | --- |
+| `POST` | `/v1/responses` | `application/json` | JSON body with `stream=false` |
+| `POST` | `/v1/responses/stream` | `text/event-stream` | JSON body with `stream=true` |
+| `POST` | `/v1/audio/transcriptions` | `multipart/form-data` | form-data `file`, `model` |
+| `POST` | `/v1/audio/translations` | `multipart/form-data` | form-data `file`, `model` |
+| `POST` | `/openrouter/test` | none required | none |
+| `POST` | `/openrouter/dictionary` | none required | query params `model`, `word` |
+
+Audio endpoint notes:
+
+- max file size: `25 MB`
+- allowed file formats: `mp3`, `mp4`, `mpeg`, `mpga`, `m4a`, `wav`, `webm`
+- transcription models: `whisper-1`, `gpt-4o-mini-transcribe`, `gpt-4o-transcribe`
+- translation models: `whisper-1` only
+- optional form fields: `response_format`, `prompt`
+- `response_format`:
+  - `whisper-1`: `json`, `text`, `srt`, `verbose_json`, `vtt`
+  - `gpt-4o-mini-transcribe` / `gpt-4o-transcribe`: `json`, `text`
+
 ## Deploy with Docker Image (No Host JRE)
 
 Use this path on a VPS where you do not want to install Java/JRE on the host.
@@ -81,7 +110,9 @@ docker run -d \
 curl -fsS http://localhost:8080/actuator/health
 ```
 
-### 5) Optional: verify `/v1/responses` with internal API key
+### 5) Optional: verify gateway endpoints with internal API key
+
+`/v1/responses`:
 
 ```bash
 curl -sS -X POST http://localhost:8080/v1/responses \
@@ -90,43 +121,31 @@ curl -sS -X POST http://localhost:8080/v1/responses \
   -d '{"model":"gpt-5","input":"hello"}'
 ```
 
-### 5b) Optional: verify `/openrouter/test` with internal API key
+`/v1/responses/stream`:
+
+```bash
+curl -N -sS -X POST http://localhost:8080/v1/responses/stream \
+  -H "Content-Type: text/event-stream" \
+  -H "Accept: text/event-stream" \
+  -H "Authorization: Bearer ${INTERNAL_API_KEY}" \
+  -d '{"model":"gpt-5","input":"hello","stream":true}'
+```
+
+`/openrouter/test`:
 
 ```bash
 curl -sS -X POST http://localhost:8080/openrouter/test \
   -H "Authorization: Bearer ${INTERNAL_API_KEY}"
 ```
 
-### 5c) Optional: verify `/openrouter/dictionary` with internal API key
-
-Returns plain text extracted from `choices[0].message.content`.
+`/openrouter/dictionary`:
 
 ```bash
 curl -sS -X POST "http://localhost:8080/openrouter/dictionary?model=openai/gpt-4o-mini&word=apple" \
   -H "Authorization: Bearer ${INTERNAL_API_KEY}"
 ```
 
-### 6) Audio endpoints (validation + proxy)
-
-Gateway endpoints:
-
-- `POST /v1/audio/transcriptions`
-- `POST /v1/audio/translations`
-
-Validation rules:
-
-- `multipart/form-data` only
-- required fields: `file`, `model`
-- optional fields: `response_format`, `prompt` (passed through unchanged)
-- max file size: `25 MB`
-- allowed file formats: `mp3`, `mp4`, `mpeg`, `mpga`, `m4a`, `wav`, `webm`
-- transcription models: `whisper-1`, `gpt-4o-mini-transcribe`, `gpt-4o-transcribe`
-- translation models: `whisper-1` only
-- `response_format`:
-  - `whisper-1`: `json`, `text`, `srt`, `verbose_json`, `vtt`
-  - `gpt-4o-mini-transcribe` / `gpt-4o-transcribe`: `json`, `text`
-
-Transcription example:
+`/v1/audio/transcriptions`:
 
 ```bash
 curl -sS -X POST http://localhost:8080/v1/audio/transcriptions \
@@ -137,7 +156,7 @@ curl -sS -X POST http://localhost:8080/v1/audio/transcriptions \
   -F "prompt=include punctuation"
 ```
 
-Translation example:
+`/v1/audio/translations`:
 
 ```bash
 curl -sS -X POST http://localhost:8080/v1/audio/translations \
